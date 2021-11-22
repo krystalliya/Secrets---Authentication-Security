@@ -8,6 +8,8 @@ const mongoose = require("mongoose");
 const session = require("express-session");
 const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const findOrCreate = require('mongoose-findorcreate')
 
 const app = express();
 
@@ -36,13 +38,15 @@ mongoose.connect("mongodb://localhost:27017/userDB", {
 });
 
 //the schema has to be a proper Mongoose schema object in order to have a plugin
-const userSchema = new mongoose.Schema ({
+const userSchema = new mongoose.Schema({
     email: String,
-    password: String
+    password: String,
+    googleId: String //when login with Google, our DB can keep the data of googleId
 });
 
 //Add the plugin to hash and salt the passpords and to save to the DB
-userSchema.plugin(passportLocalMongoose); 
+userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
 
 //Create User model and set up Mongoose to use the userSchema
 const User = new mongoose.model("User", userSchema);
@@ -50,26 +54,73 @@ const User = new mongoose.model("User", userSchema);
 //Passport-local configurations
 passport.use(User.createStrategy());
 
-passport.serializeUser(User.serializeUser());
-passport.deserializeUser(User.deserializeUser());
+//replaced the serialize and deserialize codes by referring to 
+//the codes on passport-google-oauth20's doc so it works for all diff strategies
+passport.serializeUser(function (user, done) {
+    done(null, user.id);
+});
+
+passport.deserializeUser(function (id, done) {
+    User.findById(id, function (err, user) {
+        done(err, user);
+    });
+});
+
+passport.use(new GoogleStrategy({
+        clientID: process.env.CLIENT_ID,
+        clientSecret: process.env.CLIENT_SECRET,
+        callbackURL: "http://localhost:3000/auth/google/secrets",
+        userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
+    },
+    function (accessToken, refreshToken, profile, cb) {
+        // console.log(profile);
+
+        //try to find the googleId or create them on our DB
+        User.findOrCreate({
+            googleId: profile.id
+        }, function (err, user) {
+            return cb(err, user);
+        });
+    }
+));
 
 
-//DO SOMETHING
-app.get("/", function (req, res){
+//DO SOMETHING (routes)
+app.get("/", function (req, res) {
     res.render("home"); //render the page called "home.ejs"
 });
 
-app.get("/login", function (req, res){
-    res.render("login"); 
+//initiate authentication on Google
+app.get("/auth/google",
+    passport.authenticate(
+        "google", {
+            scope: ["profile"]
+        }
+    )
+);
+
+//when authetication is successful will redirect the user to our website
+//NOTE: the callback route below needed to be match the Authorised redirect URIs 
+app.get("/auth/google/secrets",
+    passport.authenticate("google", {
+        failureRedirect: "/login"
+    }),
+    function (req, res) {
+        // Successful authentication, redirect to the secrets
+        res.redirect("/secrets");
+    });
+
+app.get("/login", function (req, res) {
+    res.render("login");
 });
 
-app.get("/register", function (req, res){
+app.get("/register", function (req, res) {
     res.render("register");
 });
 
 
-app.get("/secrets", function (req, res){
-    if (req.isAuthenticated()){
+app.get("/secrets", function (req, res) {
+    if (req.isAuthenticated()) {
         res.render("secrets");
     } else {
         res.redirect("/login");
@@ -77,22 +128,23 @@ app.get("/secrets", function (req, res){
 });
 
 
-app.get("/logout", function(req, res){
+app.get("/logout", function (req, res) {
     req.logout();
     res.redirect("/");
 });
 
 
-app.post("/register", function (req, res){
-    User.register(
-        {username: req.body.username}, 
-        req.body.password, 
-        function(err, user){
+app.post("/register", function (req, res) {
+    User.register({
+            username: req.body.username
+        },
+        req.body.password,
+        function (err, user) {
             if (err) {
                 console.log(err);
                 res.redirect("/register");
             } else {
-                passport.authenticate("local")(req, res, function(){
+                passport.authenticate("local")(req, res, function () {
                     res.redirect("/secrets");
                 });
             }
@@ -101,17 +153,17 @@ app.post("/register", function (req, res){
 });
 
 
-app.post("/login", function(req, res){
+app.post("/login", function (req, res) {
     const user = new User({
         username: req.body.username,
         password: req.body.password
     });
 
-    req.login(user, function(err){
+    req.login(user, function (err) {
         if (err) {
             console.log(err);
         } else {
-            passport.authenticate("local")(req, res, function(){
+            passport.authenticate("local")(req, res, function () {
                 res.redirect("/secrets");
             });
         }
